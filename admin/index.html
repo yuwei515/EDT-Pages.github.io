@@ -16982,10 +16982,10 @@
 
 		// 展开模块时首次加载（受 _nodesLoaded 控制），手动刷新则强制重拉
 		async function loadNodesOnce(titleEl) {
-			// 仅在从折叠态展开成展开态时触发一次
+			// toggleModule 已先执行；此时 module 仍含 collapsed → 说明这一击是「折叠」操作，跳过加载
 			const module = titleEl ? titleEl.closest('.module') : null;
-			const isCollapsed = module && module.classList.contains('collapsed');
-			if (isCollapsed || !_nodesLoaded) return loadNodes();
+			if (module && module.classList.contains('collapsed')) return;
+			if (!_nodesLoaded) return loadNodes();
 		}
 
 		async function loadNodes() {
