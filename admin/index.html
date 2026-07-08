@@ -8531,6 +8531,43 @@
 				</div>
 			</div>
 
+			<!-- 节点管理模块（P2: 显示节点列表/地区筛选/刷新订阅） -->
+			<div class="module collapsed" id="nodesAdminModule">
+				<div class="module-title" onclick="toggleModule(this); loadNodesOnce(this)">
+					🗺️ 节点管理（地区识别）
+					<svg class="collapse-icon" viewBox="0 0 24 24">
+						<path d="M7 10l5 5 5-5z" />
+					</svg>
+				</div>
+				<div class="module-content">
+					<div class="nodes-admin-toolbar" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px;">
+						<span class="cf-stat-label" id="nodesSummary">节点列表加载中…</span>
+						<select id="nodesRegionFilter" onchange="renderNodesTable()" style="padding:6px 10px;border-radius:6px;border:1px solid var(--admin-border,#ddd);background:var(--admin-input-bg,#fff);color:var(--admin-text,#222);">
+							<option value="">全部地区</option>
+						</select>
+						<button type="button" class="btn btn-secondary" style="padding:6px 14px;font-size:13px;" onclick="loadNodes()">🔄 刷新节点</button>
+						<button type="button" class="btn btn-primary" style="padding:6px 14px;font-size:13px;" onclick="regenSubscription()">🔁 重新生成订阅</button>
+					</div>
+					<div style="overflow-x:auto;max-height:380px;overflow-y:auto;border-radius:8px;">
+						<table id="nodesTable" style="width:100%;border-collapse:collapse;font-size:13px;">
+							<thead>
+								<tr style="position:sticky;top:0;background:var(--admin-card-bg,#2a2a2a);color:var(--admin-text,#eee);">
+									<th style="padding:8px 10px;text-align:left;border-bottom:1px solid var(--admin-border,#333);">#</th>
+									<th style="padding:8px 10px;text-align:left;border-bottom:1px solid var(--admin-border,#333);">地址</th>
+									<th style="padding:8px 10px;text-align:left;border-bottom:1px solid var(--admin-border,#333);">端口</th>
+									<th style="padding:8px 10px;text-align:left;border-bottom:1px solid var(--admin-border,#333);">地区</th>
+									<th style="padding:8px 10px;text-align:left;border-bottom:1px solid var(--admin-border,#333);">状态</th>
+									<th style="padding:8px 10px;text-align:left;border-bottom:1px solid var(--admin-border,#333);">备注</th>
+								</tr>
+							</thead>
+							<tbody id="nodesTableBody">
+								<tr><td colspan="6" style="padding:12px;color:var(--admin-muted,#888);text-align:center;">尚未加载</td></tr>
+							</tbody>
+						</table>
+					</div>
+				</div>
+			</div>
+
 			<!-- Cloudflare Workers/Pages 使用统计模块 -->
 			<div class="module cf-usage-module collapsed" id="cfUsageModule">
 				<div class="module-title" onclick="toggleModule(this)">
@@ -16937,6 +16974,91 @@
 
 			textarea.dispatchEvent(new Event('input', { bubbles: true }));
 		}
+
+		// ============ P2: 节点管理面板（地区识别） ============
+		let _nodesData = null;      // 最近一次 nodes.json 原始返回
+		let _nodesLoaded = false;   // 是否已加载过一次（避免每次展开都请求）
+		const _nodesStatusOk = '在线', _nodesStatusUnknown = '未知';
+
+		// 展开模块时首次加载（受 _nodesLoaded 控制），手动刷新则强制重拉
+		async function loadNodesOnce(titleEl) {
+			// 仅在从折叠态展开成展开态时触发一次
+			const module = titleEl ? titleEl.closest('.module') : null;
+			const isCollapsed = module && module.classList.contains('collapsed');
+			if (isCollapsed || !_nodesLoaded) return loadNodes();
+		}
+
+		async function loadNodes() {
+			const summary = document.getElementById('nodesSummary');
+			const tbody = document.getElementById('nodesTableBody');
+			if (summary) summary.textContent = '正在拉取节点列表…';
+			try {
+				const res = await fetch('/admin/nodes.json?_t=' + Date.now(), {
+					method: 'GET',
+					headers: { 'Cache-Control': 'no-cache, no-store, must-revalidate', 'Pragma': 'no-cache' }
+				});
+				if (!res.ok) throw new Error('节点接口返回 ' + res.status);
+				_nodesData = await res.json();
+				_nodesLoaded = true;
+				buildRegionFilter();
+				renderNodesTable();
+			} catch (e) {
+				if (tbody) tbody.innerHTML = `<tr><td colspan="6" style="padding:12px;color:#e88;text-align:center;">加载失败：${e.message}</td></tr>`;
+				if (summary) summary.textContent = '加载失败：' + e.message;
+			}
+		}
+
+		// 用地区统计构建下拉筛选
+		function buildRegionFilter() {
+			const sel = document.getElementById('nodesRegionFilter');
+			if (!sel || !_nodesData) return;
+			const cur = sel.value;
+			const stats = _nodesData.地区统计 || {};
+			sel.innerHTML = '<option value="">全部地区（' + (_nodesData.总数 || 0) + '）</option>' +
+				Object.keys(stats).sort().map(r => `<option value="${r}">${r}（${stats[r]}）</option>`).join('');
+			if (cur && stats[cur]) sel.value = cur; // 保留当前选择
+		}
+
+		// 渲染表格（应用地区筛选）
+		function renderNodesTable() {
+			const tbody = document.getElementById('nodesTableBody');
+			const summary = document.getElementById('nodesSummary');
+			const filter = (document.getElementById('nodesRegionFilter') || {}).value || '';
+			if (!tbody || !_nodesData) return;
+			let 节点 = (_nodesData.节点列表 || []).filter(n => !filter || n.地区 === filter);
+			let html = '';
+			节点.forEach((n, i) => {
+				const 地区 = n.地区 || '—';
+				// 状态：目前无测速，仅依是否有地区/地址可连通性做轻量判断（已知地址即标"在线"）
+				const 状态 = n.地址 ? _nodesStatusOk : _nodesStatusUnknown;
+				const 备注 = n.备注 ? n.备注 : (n.地区 && n.序号 ? `${n.地区}-${n.序号}` : '（自动命名）');
+				const addr = `${n.地址 || '-'}`;
+				const port = `${n.端口 || '-'}`;
+				const 状态色 = 状态 === _nodesStatusOk ? '#4ade80' : '#94a3b8';
+				html += `<tr style="border-bottom:1px solid var(--admin-border,#333);">
+					<td style="padding:6px 10px;color:var(--admin-muted,#888);">${i + 1}</td>
+					<td style="padding:6px 10px;font-family:'Fira Code',monospace;">${addr}</td>
+					<td style="padding:6px 10px;font-family:'Fira Code',monospace;">${port}</td>
+					<td style="padding:6px 10px;">${地区}</td>
+					<td style="padding:6px 10px;color:${状态色};">● ${状态}</td>
+					<td style="padding:6px 10px;color:var(--admin-muted,#aaa);">${备注}</td>
+				</tr>`;
+			});
+			if (!html) html = `<tr><td colspan="6" style="padding:12px;color:var(--admin-muted,#888);text-align:center;">没有匹配的节点</td></tr>`;
+			tbody.innerHTML = html;
+			if (summary) {
+				if (filter) summary.textContent = `已筛选 ${节点.length} 个「${filter}」节点 / 共 ${_nodesData.总数 || 0} 个`;
+				else summary.textContent = `共 ${_nodesData.总数 || 0} 个节点 · ${Object.keys(_nodesData.地区统计 || {}).length} 个地区`;
+			}
+		}
+
+		// 重新生成订阅：重新拉取订阅地址（让前端显示刷新，本质是重新加载节点+提示用户在客户端刷新）
+		function regenSubscription() {
+			if (!confirm('将重新拉取节点列表并提示客户端刷新订阅，确定吗？')) return;
+			_nodesLoaded = false; // 强制重新加载
+			loadNodes().then(() => showToast('节点列表已刷新，请在客户端重新更新订阅生效', 'success'));
+		}
+		// ============ /P2 节点管理 ============
 
 		async function loadConfig() {
 			try {
